@@ -13,7 +13,7 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public'))); // Para archivos estáticos (CSS/JS)
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Rutas API
 app.use('/api', healthcheckRouter);

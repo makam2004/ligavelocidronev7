@@ -1,18 +1,26 @@
 // routes/scrapeLeaderboard.js
+import express from 'express';
+import puppeteer from 'puppeteer';
+
+const router = express.Router();
+
 router.get('/scrape-leaderboard', async (_req, res) => {
   const URL = 'https://www.velocidrone.com/leaderboard/33/1763/All';
   
   try {
-    const browser = await puppeteer.launch({ headless: true });
+    const browser = await puppeteer.launch({ 
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'] // Necesario para Render.com
+    });
     const page = await browser.newPage();
-    await page.goto(URL, { waitUntil: 'networkidle2' });
+    await page.goto(URL, { waitUntil: 'networkidle2', timeout: 60000 });
 
     // Extraer datos de "Race Mode: Single Class"
     const raceModeData = await page.evaluate(() => {
       const rows = Array.from(document.querySelectorAll('#race-mode-single-class tbody tr'));
       return rows.slice(0, 20).map(row => ({
-        pilot: row.querySelector('td:nth-child(2)').innerText.trim(), // Columna del piloto
-        time: row.querySelector('td:nth-child(3)').innerText.trim(),  // Columna del tiempo
+        pilot: row.querySelector('td:nth-child(2)').innerText.trim(),
+        time: row.querySelector('td:nth-child(3)').innerText.trim(),
       }));
     });
 
@@ -32,3 +40,5 @@ router.get('/scrape-leaderboard', async (_req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+export default router;
