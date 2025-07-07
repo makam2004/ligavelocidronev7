@@ -9,7 +9,7 @@ router.get('/scrape-leaderboard', async (_req, res) => {
   try {
     // 1. Configuración mejorada de Puppeteer
     const browser = await puppeteer.launch({
-      headless: 'new', // Usar el nuevo motor headless
+      headless: 'new',
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -20,77 +20,51 @@ router.get('/scrape-leaderboard', async (_req, res) => {
     
     const page = await browser.newPage();
     
-    // 2. Configuración de navegación
+    // 2. Configurar navegador como humano
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
     await page.setJavaScriptEnabled(true);
     await page.setViewport({ width: 1366, height: 768 });
     await page.setDefaultNavigationTimeout(60000);
 
-    // 3. Navegación con múltiples estrategias de espera
+    // 3. Navegar a la página con espera inteligente
     console.log('Navegando a la página...');
     await page.goto(URL, { 
-      waitUntil: ['domcontentloaded', 'networkidle0'],
+      waitUntil: 'networkidle2',
       timeout: 60000
     });
 
-    // 4. Espera dinámica mejorada
-    const waitForTable = async () => {
+    // 4. Esperar específicamente por los elementos de la tabla
+    console.log('Esperando tablas...');
+    await page.waitForFunction(() => {
+      const headers = Array.from(document.querySelectorAll('th'));
+      return headers.some(header => header.textContent.includes('Time')) && 
+             headers.some(header => header.textContent.includes('Player'));
+    }, { timeout: 30000 });
+
+    // 5. Extraer datos de ambas pestañas
+    const extractTableData = async (tabName) => {
       try {
-        console.log('Buscando tablas...');
-        
-        // Estrategia 1: Esperar por cualquier tabla de clasificación
-        await page.waitForFunction(() => {
-          const tables = document.querySelectorAll('.table, table, .leaderboard-table, .leaderboard');
-          return tables.length > 0;
-        }, { timeout: 30000 });
-
-        // Estrategia 2: Si falla, buscar por texto característico
-        await page.waitForFunction(() => {
-          return document.body.textContent.includes('Player') || 
-                 document.body.textContent.includes('Time');
-        }, { timeout: 30000 });
-
-        return true;
-      } catch (e) {
-        console.error('Error en waitForTable:', e);
-        return false;
-      }
-    };
-
-    if (!await waitForTable()) {
-      throw new Error('No se pudo encontrar ninguna tabla de clasificación');
-    }
-
-    // 5. Extracción de datos con múltiples patrones de selectores
-    const extractData = async (tabName) => {
-      try {
-        console.log(`Extrayendo datos de ${tabName}...`);
-        
-        // Hacer clic en la pestaña si existe
-        await page.click(`a[href="#${tabName}"], [data-target="#${tabName}"]`).catch(() => {});
-        await page.waitForTimeout(2000);
+        // Cambiar a la pestaña correspondiente
+        await page.click(`a[href="#${tabName}"]`).catch(() => {});
+        await page.waitForTimeout(2000); // Esperar a que cargue el contenido
 
         return await page.evaluate((tabName) => {
-          // Buscar la tabla usando múltiples patrones
-          const table = document.querySelector(`#${tabName} table, #${tabName} .table, 
-                                             #${tabName} .leaderboard-table, .${tabName}-table`);
-          
-          if (!table) {
-            console.error(`Tabla ${tabName} no encontrada`);
-            return [];
-          }
+          const table = document.querySelector(`#${tabName} table`);
+          if (!table) return [];
 
-          const rows = Array.from(table.querySelectorAll('tr')).slice(0, 20);
+          const rows = Array.from(table.querySelectorAll('tbody tr')).slice(0, 20);
           return rows.map(row => {
             const cols = row.querySelectorAll('td');
-            if (cols.length < 3) return null;
-            
             return {
               position: cols[0]?.textContent?.trim() || '',
-              pilot: cols[1]?.textContent?.trim() || 'N/A',
-              time: cols[2]?.textContent?.trim() || 'N/A'
+              time: cols[1]?.textContent?.trim() || 'N/A',
+              pilot: cols[2]?.textContent?.trim() || 'N/A',
+              country: cols[3]?.textContent?.trim() || '',
+              ranking: cols[4]?.textContent?.trim() || '',
+              model: cols[5]?.textContent?.trim() || '',
+              date: cols[6]?.textContent?.trim() || ''
             };
-          }).filter(item => item && item.pilot !== 'N/A');
+          }).filter(item => item.pilot !== 'N/A');
         }, tabName);
       } catch (e) {
         console.error(`Error extrayendo ${tabName}:`, e);
@@ -100,23 +74,34 @@ router.get('/scrape-leaderboard', async (_req, res) => {
 
     // 6. Extraer datos de ambas pestañas
     const [raceModeData, threeLapData] = await Promise.all([
-      extractData('race-mode-single-class'),
-      extractData('three-lap-single-class')
+      extractTableData('race-mode-single-class'),
+      extractTableData('three-lap-single-class')
     ]);
 
     await browser.close();
     
-    // 7. Verificar resultados
-    if (raceModeData.length === 0 && threeLapData.length === 0) {
-      throw new Error('No se encontraron datos en ninguna tabla');
+    // 7. Formatear respuesta
+    const response = {
+      success: true,
+      raceMode: raceModeData.map(item => ({
+        position: item.position,
+        pilot: item.pilot,
+        time: item.time
+      })),
+      threeLap: threeLapData.map(item => ({
+        position: item.position,
+        pilot: item.pilot,
+        time: item.time
+      })),
+      fullDataAvailable: raceModeData.length > 0 || threeLapData.length > 0,
+      timestamp: new Date().toISOString()
+    };
+
+    if (!response.fullDataAvailable) {
+      throw new Error('No se encontraron datos en el formato esperado');
     }
 
-    res.json({ 
-      success: true,
-      raceMode: raceModeData,
-      threeLap: threeLapData,
-      timestamp: new Date().toISOString()
-    });
+    res.json(response);
 
   } catch (error) {
     console.error('Error general:', error);
@@ -124,12 +109,7 @@ router.get('/scrape-leaderboard', async (_req, res) => {
       success: false,
       error: 'Error al obtener datos',
       details: error.message,
-      suggestion: [
-        '1. Verifique que la URL siga siendo válida',
-        '2. La página puede requerir autenticación',
-        '3. Velocidrone puede estar bloqueando bots',
-        '4. Los selectores pueden necesitar actualización'
-      ]
+      suggestion: 'Por favor verifica que: 1) La URL sea correcta, 2) No haya protección anti-bots, 3) Los selectores coincidan con la estructura actual'
     });
   }
 });
