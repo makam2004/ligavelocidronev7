@@ -9,53 +9,78 @@ router.get('/scrape-leaderboard', async (_req, res) => {
   try {
     const browser = await puppeteer.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage'
+      ]
     });
     const page = await browser.newPage();
     
-    // Configurar User-Agent y esperar selectores dinámicos
+    // Configuración importante para evitar bloqueos
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-    await page.goto(URL, { waitUntil: 'networkidle2', timeout: 60000 });
+    await page.setJavaScriptEnabled(true);
+    await page.setViewport({ width: 1366, height: 768 });
 
-    // Esperar a que las tablas se carguen
-    await page.waitForSelector('#race-mode-single-class', { timeout: 5000 });
-    await page.waitForSelector('#three-lap-single-class', { timeout: 5000 });
-
-    // Extraer datos con selectores mejorados
-    const raceModeData = await page.evaluate(() => {
-      const table = document.querySelector('#race-mode-single-class');
-      return Array.from(table.querySelectorAll('tbody tr')).slice(0, 20).map(row => {
-        const cols = row.querySelectorAll('td');
-        return {
-          pilot: cols[1]?.textContent?.trim() || 'N/A',
-          time: cols[2]?.textContent?.trim() || 'N/A'
-        };
-      });
+    // Navegación con timeout extendido
+    await page.goto(URL, { 
+      waitUntil: 'domcontentloaded',
+      timeout: 30000
     });
 
-    const threeLapData = await page.evaluate(() => {
-      const table = document.querySelector('#three-lap-single-class');
-      return Array.from(table.querySelectorAll('tbody tr')).slice(0, 20).map(row => {
-        const cols = row.querySelectorAll('td');
-        return {
-          pilot: cols[1]?.textContent?.trim() || 'N/A',
-          time: cols[2]?.textContent?.trim() || 'N/A'
-        };
-      });
-    });
+    // Esperar dinámicamente a que aparezcan los datos
+    const waitForTableData = async (selector) => {
+      await page.waitForFunction(
+        selector => {
+          const table = document.querySelector(selector);
+          return table && table.querySelectorAll('tbody tr').length > 0;
+        },
+        { timeout: 15000 },
+        selector
+      );
+    };
+
+    // Extracción de datos mejorada
+    const extractTableData = async (selector) => {
+      try {
+        await waitForTableData(selector);
+        return await page.evaluate((selector) => {
+          const rows = Array.from(document.querySelectorAll(`${selector} tbody tr`));
+          return rows.slice(0, 20).map(row => {
+            const cols = row.querySelectorAll('td');
+            return {
+              pilot: cols[1]?.textContent?.trim() || 'N/A',
+              time: cols[2]?.textContent?.trim() || 'N/A'
+            };
+          }).filter(item => item.pilot !== 'N/A');
+        }, selector);
+      } catch (error) {
+        console.error(`Error extracting ${selector}:`, error);
+        return [];
+      }
+    };
+
+    const [raceModeData, threeLapData] = await Promise.all([
+      extractTableData('.tab-pane#race-mode-single-class'),
+      extractTableData('.tab-pane#three-lap-single-class')
+    ]);
 
     await browser.close();
     
     res.json({ 
-      raceMode: raceModeData.filter(item => item.pilot !== 'N/A'), 
-      threeLap: threeLapData.filter(item => item.pilot !== 'N/A') 
+      raceMode: raceModeData,
+      threeLap: threeLapData,
+      message: raceModeData.length === 0 && threeLapData.length === 0 
+        ? 'No se encontraron datos. La estructura de la página puede haber cambiado.'
+        : 'Datos obtenidos correctamente'
     });
 
   } catch (error) {
-    console.error('Error en scraping:', error);
+    console.error('Error general:', error);
     res.status(500).json({ 
-      error: 'Error al obtener datos', 
-      details: error.message 
+      error: 'Error al obtener datos',
+      details: error.message,
+      solution: 'Intente nuevamente más tarde o verifique si la página ha cambiado su estructura'
     });
   }
 });
