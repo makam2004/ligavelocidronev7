@@ -3,71 +3,96 @@ import puppeteer from 'puppeteer';
 
 const router = express.Router();
 
+// Función de delay mejorada
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
 router.get('/scrape-leaderboard', async (_req, res) => {
   const URL = 'https://www.velocidrone.com/leaderboard/33/1763/All';
   
   try {
-    // Configuración de Puppeteer
+    // 1. Configuración optimizada para Render.com
     const browser = await puppeteer.launch({
       headless: 'new',
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage'
-      ]
+        '--disable-dev-shm-usage',
+        '--single-process'
+      ],
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined
     });
     
     const page = await browser.newPage();
     
-    // Configurar como navegador legítimo
+    // 2. Configuración de navegación
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-    await page.setViewport({ width: 1366, height: 768 });
+    await page.setJavaScriptEnabled(true);
+    await page.setViewport({ width: 1280, height: 800 });
+    await page.setDefaultNavigationTimeout(60000);
 
-    // Navegar a la página
+    // 3. Navegación con múltiples estrategias de espera
     console.log('Navegando a la página...');
     await page.goto(URL, { 
-      waitUntil: 'networkidle2',
+      waitUntil: ['domcontentloaded', 'networkidle0'],
       timeout: 60000
     });
 
-    // Esperar a que carguen las tablas
-    console.log('Esperando tablas...');
-    await page.waitForSelector('.tab-content', { timeout: 30000 });
+    // 4. Espera flexible para contenido dinámico
+    console.log('Esperando contenido...');
+    try {
+      // Estrategia 1: Esperar por cualquier tabla
+      await page.waitForSelector('table', { timeout: 30000 });
+    } catch (e) {
+      // Estrategia 2: Esperar por texto característico
+      await page.waitForFunction(
+        () => document.body.textContent.includes('Time') && 
+              document.body.textContent.includes('Player'),
+        { timeout: 30000 }
+      );
+    }
 
-    // Función para extraer datos de una pestaña específica
-    const extractTabData = async (tabId) => {
-      // Activar la pestaña
-      await page.click(`a[href="#${tabId}"]`);
-      await page.waitForTimeout(2000); // Esperar a que cargue el contenido
+    // 5. Extracción de datos mejorada
+    const extractData = async (tabId) => {
+      try {
+        // Intentar activar la pestaña
+        const tabSelector = `a[href="#${tabId}"], [data-target="#${tabId}"]`;
+        await page.click(tabSelector).catch(() => {});
+        await delay(3000); // Espera generosa para carga dinámica
 
-      return await page.evaluate((tabId) => {
-        const tabContent = document.querySelector(`#${tabId}`);
-        if (!tabContent) return [];
+        return await page.evaluate((tabId) => {
+          const tabContent = document.querySelector(`#${tabId}`);
+          if (!tabContent) return [];
 
-        const table = tabContent.querySelector('table');
-        if (!table) return [];
+          const table = tabContent.querySelector('table');
+          if (!table) return [];
 
-        const rows = Array.from(table.querySelectorAll('tbody tr')).slice(0, 20);
-        return rows.map(row => {
-          const cols = row.querySelectorAll('td');
-          return {
-            position: cols[0]?.textContent?.trim() || '',
-            time: cols[1]?.textContent?.trim() || 'N/A',
-            pilot: cols[2]?.textContent?.trim() || 'N/A'
-          };
-        });
-      }, tabId);
+          const rows = Array.from(table.querySelectorAll('tr')).slice(1, 21); // Excluir header
+          return rows.map(row => {
+            const cols = row.querySelectorAll('td');
+            return {
+              position: cols[0]?.textContent?.trim() || '',
+              time: cols[1]?.textContent?.trim() || 'N/A',
+              pilot: cols[2]?.textContent?.trim() || 'N/A'
+            };
+          }).filter(item => item.pilot !== 'N/A');
+        }, tabId);
+      } catch (e) {
+        console.error(`Error en pestaña ${tabId}:`, e);
+        return [];
+      }
     };
 
-    // Extraer datos de ambas pestañas
-    const raceModeData = await extractTabData('race-mode-single-class');
-    const threeLapData = await extractTabData('three-lap-single-class');
+    // 6. Extracción paralela con manejo de errores individual
+    const [raceModeData, threeLapData] = await Promise.all([
+      extractData('race-mode-single-class'),
+      extractData('three-lap-single-class')
+    ]);
 
     await browser.close();
 
-    // Verificar resultados
+    // 7. Validación de resultados
     if (raceModeData.length === 0 && threeLapData.length === 0) {
-      throw new Error('No se encontraron datos en ninguna tabla');
+      throw new Error('No se encontraron datos en las tablas');
     }
 
     res.json({ 
@@ -83,7 +108,7 @@ router.get('/scrape-leaderboard', async (_req, res) => {
       success: false,
       error: 'Error al obtener datos',
       details: error.message,
-      suggestion: 'Por favor verifique: 1) La URL 2) Si la página requiere autenticación 3) Si hay protección anti-bots'
+      suggestion: 'Recomendaciones: 1) Verificar URL 2) Intentar nuevamente 3) Contactar soporte si persiste'
     });
   }
 });
