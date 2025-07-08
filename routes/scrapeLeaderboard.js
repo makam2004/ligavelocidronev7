@@ -7,7 +7,7 @@ router.get('/scrape-leaderboard', async (_req, res) => {
   const URL = 'https://www.velocidrone.com/leaderboard/33/1763/All';
   
   try {
-    // Configuración mejorada para producción
+    // 1. Configuración mejorada de Puppeteer
     const browser = await puppeteer.launch({
       headless: 'new',
       args: [
@@ -15,79 +15,67 @@ router.get('/scrape-leaderboard', async (_req, res) => {
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--single-process'
-      ],
-      timeout: 60000
+      ]
     });
     
     const page = await browser.newPage();
     
-    // Configurar navegación
+    // 2. Configurar navegador como humano
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-    await page.setJavaScriptEnabled(true);
     await page.setViewport({ width: 1366, height: 768 });
-    await page.setDefaultNavigationTimeout(60000);
 
-    // Navegar a la página
+    // 3. Navegar a la página con esperas inteligentes
     console.log('Navegando a la página...');
-    const response = await page.goto(URL, { 
+    await page.goto(URL, { 
       waitUntil: 'networkidle2',
       timeout: 60000
     });
 
-    if (!response.ok()) {
-      throw new Error(`HTTP ${response.status()} - ${response.statusText()}`);
-    }
+    // 4. Esperar dinámicamente por contenido específico
+    console.log('Buscando tablas...');
+    await page.waitForFunction(() => {
+      const tables = document.querySelectorAll('table');
+      return tables.length > 0;
+    }, { timeout: 30000 });
 
-    // Esperar por contenido específico
-    console.log('Esperando contenido...');
-    await page.waitForSelector('table', { timeout: 30000 });
-
-    // Función de delay alternativa (para versiones antiguas de Puppeteer)
-    const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-
-    // Extraer datos
-    const extractTableData = async (tabName) => {
+    // 5. Extraer datos de ambas pestañas
+    const extractTableData = async () => {
       try {
-        // Cambiar a la pestaña si existe
-        const tabSelector = `a[href="#${tabName}"]`;
-        if (await page.$(tabSelector)) {
-          await page.click(tabSelector);
-          await delay(2000); // Espera alternativa
-        }
-
-        return await page.evaluate((tabName) => {
-          const table = document.querySelector(`#${tabName} table`);
-          if (!table) return [];
-
-          const rows = Array.from(table.querySelectorAll('tbody tr')).slice(0, 20);
-          return rows.map(row => {
-            const cols = row.querySelectorAll('td');
-            if (cols.length < 3) return null;
-            
-            return {
-              position: cols[0]?.textContent?.trim() || '',
-              time: cols[1]?.textContent?.trim() || 'N/A',
-              pilot: cols[2]?.textContent?.trim() || 'N/A'
-            };
-          }).filter(Boolean);
-        }, tabName);
+        return await page.evaluate(() => {
+          const results = [];
+          const tables = document.querySelectorAll('table');
+          
+          tables.forEach(table => {
+            const rows = Array.from(table.querySelectorAll('tr')).slice(1, 21); // Saltar header
+            rows.forEach(row => {
+              const cols = row.querySelectorAll('td');
+              if (cols.length >= 3) {
+                results.push({
+                  position: cols[0]?.textContent?.trim() || '',
+                  time: cols[1]?.textContent?.trim() || 'N/A',
+                  pilot: cols[2]?.textContent?.trim() || 'N/A'
+                });
+              }
+            });
+          });
+          
+          return results;
+        });
       } catch (e) {
-        console.error(`Error extrayendo ${tabName}:`, e);
+        console.error('Error al extraer datos:', e);
         return [];
       }
     };
 
-    // Extraer datos
-    const [raceModeData, threeLapData] = await Promise.all([
-      extractTableData('race-mode-single-class'),
-      extractTableData('three-lap-single-class')
-    ]);
-
+    const tableData = await extractTableData();
     await browser.close();
 
-    // Verificar datos
+    // 6. Dividir resultados (asumimos que la primera tabla es Race Mode y la segunda es 3 Lap)
+    const raceModeData = tableData.slice(0, 20);
+    const threeLapData = tableData.slice(20, 40);
+
     if (raceModeData.length === 0 && threeLapData.length === 0) {
-      throw new Error('No se encontraron datos válidos');
+      throw new Error('No se encontraron datos en las tablas');
     }
 
     res.json({ 
@@ -103,7 +91,7 @@ router.get('/scrape-leaderboard', async (_req, res) => {
       success: false,
       error: 'Error al obtener datos',
       details: error.message,
-      suggestion: 'Intente nuevamente más tarde o contacte al soporte'
+      suggestion: 'La estructura de la página puede haber cambiado. Por favor verifique manualmente.'
     });
   }
 });
