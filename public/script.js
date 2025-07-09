@@ -1,25 +1,29 @@
 async function fetchLeaderboardData() {
   try {
     const response = await fetch('/api/scrape-leaderboard');
-    if (!response.ok) {
-      throw new Error(`Error HTTP: ${response.status}`);
-    }
-    const data = await response.json();
+    if (!response.ok) throw new Error(`Error HTTP: ${response.status}`);
     
-    if (data.success) {
-      // Actualizar la información del track y escenario
-      document.getElementById('escenario').textContent = data.metadata.escenario;
-      document.getElementById('track-name').textContent = data.metadata.track;
-      
-      // Actualizar las tablas
-      updateTable('race-mode-data', data.raceMode);
-      updateTable('three-lap-data', data.threeLap);
-    } else {
-      throw new Error(data.error || 'Error desconocido');
-    }
+    const data = await response.json();
+    if (!data.success) throw new Error(data.error || 'Error en los datos');
+
+    // Actualizar Race Mode
+    const raceMode = document.getElementById('race-mode');
+    raceMode.querySelector('.escenario').textContent = data.raceMode.metadata.escenario;
+    raceMode.querySelector('.track-name').textContent = data.raceMode.metadata.track;
+    updateTable('race-mode-data', data.raceMode.resultados);
+
+    // Actualizar 3 Lap
+    const threeLap = document.getElementById('three-lap');
+    threeLap.querySelector('.escenario').textContent = data.threeLap.metadata.escenario;
+    threeLap.querySelector('.track-name').textContent = data.threeLap.metadata.track;
+    updateTable('three-lap-data', data.threeLap.resultados);
+
   } catch (error) {
-    console.error('Error fetching data:', error);
+    console.error('Error:', error);
     document.getElementById('error-message').textContent = `Error: ${error.message}`;
+    setTimeout(() => {
+      document.getElementById('error-message').textContent = '';
+    }, 5000);
   }
 }
 
@@ -36,10 +40,9 @@ function updateTable(tableId, data) {
   `).join('');
 }
 
-// Cargar datos al iniciar y cada 60 segundos
+// Inicialización
 document.addEventListener('DOMContentLoaded', () => {
   fetchLeaderboardData();
   document.getElementById('refresh-btn').addEventListener('click', fetchLeaderboardData);
-  
-  setInterval(fetchLeaderboardData, 60000);
+  setInterval(fetchLeaderboardData, 60000); // Actualizar cada minuto
 });

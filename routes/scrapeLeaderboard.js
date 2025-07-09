@@ -13,15 +13,13 @@ async function obtenerDatosCompletos(url, textoPestania) {
   await page.goto(url, { waitUntil: 'domcontentloaded' });
 
   try {
-    // 1. Extraer información del escenario y track
-    const { escenario, track } = await page.evaluate(() => {
-      return {
-        escenario: document.querySelector('h2.text-center')?.textContent.trim() || 'Escenario no encontrado',
-        track: document.querySelector('div.container h3')?.textContent.trim() || 'Track no encontrado'
-      };
-    });
+    // Extraer metadatos
+    const { escenario, track } = await page.evaluate(() => ({
+      escenario: document.querySelector('h2.text-center')?.textContent.trim() || 'Escenario no encontrado',
+      track: document.querySelector('div.container h3')?.textContent.trim() || 'Track no encontrado'
+    }));
 
-    // 2. Cambiar a la pestaña solicitada
+    // Cambiar a pestaña
     await page.evaluate((texto) => {
       const tabs = Array.from(document.querySelectorAll('a'));
       const targetTab = tabs.find(tab => tab.textContent.includes(texto));
@@ -31,7 +29,7 @@ async function obtenerDatosCompletos(url, textoPestania) {
     await new Promise(resolve => setTimeout(resolve, 2000));
     await page.waitForSelector('tbody tr', { timeout: 10000 });
 
-    // 3. Extraer datos de la tabla
+    // Extraer resultados
     const resultados = await page.evaluate(() => {
       const rows = Array.from(document.querySelectorAll('tbody tr'));
       return rows.slice(0, 20).map(row => {
@@ -44,33 +42,28 @@ async function obtenerDatosCompletos(url, textoPestania) {
       });
     });
 
-    return { escenario, track, resultados };
+    return { metadata: { escenario, track }, resultados };
   } finally {
     await browser.close();
   }
 }
 
 router.get('/scrape-leaderboard', async (_req, res) => {
-  const URL = 'https://www.velocidrone.com/leaderboard/33/1763/All';
-  
+  const TRACK1_URL = 'https://www.velocidrone.com/leaderboard/33/1763/All';
+  const TRACK2_URL = 'https://www.velocidrone.com/leaderboard/29/217/All'; // Ejemplo segundo track
+
   try {
-    // Obtener datos de ambas pestañas
-    const [raceMode, threeLap] = await Promise.all([
-      obtenerDatosCompletos(URL, 'Race Mode: Single Class'),
-      obtenerDatosCompletos(URL, '3 Lap: Single Class')
+    const [raceModeTrack1, threeLapTrack2] = await Promise.all([
+      obtenerDatosCompletos(TRACK1_URL, 'Race Mode: Single Class'),
+      obtenerDatosCompletos(TRACK2_URL, '3 Lap: Single Class')
     ]);
 
     res.json({ 
       success: true,
-      metadata: {
-        escenario: raceMode.escenario, // "Dynamic Weather"
-        track: raceMode.track          // "SGDC Floodlit BQE March 2025"
-      },
-      raceMode: raceMode.resultados,
-      threeLap: threeLap.resultados,
+      raceMode: raceModeTrack1,
+      threeLap: threeLapTrack2,
       timestamp: new Date().toISOString()
     });
-
   } catch (error) {
     console.error('Error:', error);
     res.status(500).json({ 

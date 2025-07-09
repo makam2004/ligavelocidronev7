@@ -8,16 +8,15 @@
 </head>
 <body>
   <div class="container">
-    <!-- Añadir este nuevo div para la información del track -->
-    <div id="track-info" class="track-header">
-      <h2 id="escenario"></h2>
-      <h3 id="track-name"></h3>
-    </div>
-
     <h1>🏆 Leaderboards Velocidrone</h1>
     
     <div class="leaderboards">
+      <!-- Tabla Race Mode -->
       <div class="leaderboard" id="race-mode">
+        <div class="track-info">
+          <h3 class="escenario"></h3>
+          <h4 class="track-name"></h4>
+        </div>
         <h2>Race Mode: Single Class</h2>
         <table>
           <thead>
@@ -31,7 +30,12 @@
         </table>
       </div>
       
+      <!-- Tabla 3 Lap -->
       <div class="leaderboard" id="three-lap">
+        <div class="track-info">
+          <h3 class="escenario"></h3>
+          <h4 class="track-name"></h4>
+        </div>
         <h2>3 Lap: Single Class</h2>
         <table>
           <thead>
@@ -47,6 +51,7 @@
     </div>
     
     <button id="refresh-btn">Actualizar Datos</button>
+    <div id="error-message"></div>
   </div>
   
   <script src="/script.js"></script>
