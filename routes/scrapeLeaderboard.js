@@ -18,29 +18,27 @@ async function obtenerDatosPestania(url, textoPestania, pilotosFiltrados) {
   await page.setViewport({ width: 1366, height: 768 });
 
   try {
-    // 1. Navegación rápida sin esperar recursos innecesarios
+    // 1. Navegación rápida
     await page.goto(url, { 
       waitUntil: 'domcontentloaded',
       timeout: 30000
     });
 
-    // 2. Extraer metadatos primero
+    // 2. Extraer metadatos
     const metadatos = await page.evaluate(() => ({
       escenario: document.querySelector('h2.text-center')?.textContent.trim() || 'Escenario no encontrado',
       track: document.querySelector('div.container h3')?.textContent.trim() || 'Track no encontrado'
     }));
 
-    // 3. Cambiar a pestaña específica (más eficiente)
+    // 3. Cambiar a pestaña específica
     const tabSelector = `a:has-text("${textoPestania}")`;
     await page.click(tabSelector);
-    await delay(1500); // Espera mínima necesaria
+    await delay(1500);
 
-    // 4. Extraer solo los primeros 200 pilotos y filtrar
+    // 4. Extraer y filtrar pilotos
     const resultados = await page.evaluate((pilotosFiltrados) => {
       const resultadosFiltrados = [];
       const rows = document.querySelectorAll('tbody tr');
-      
-      // Limitar a 200 resultados para mayor velocidad
       const maxRows = Math.min(200, rows.length);
       
       for (let i = 0; i < maxRows; i++) {
@@ -67,7 +65,7 @@ async function obtenerDatosPestania(url, textoPestania, pilotosFiltrados) {
 
 router.get('/scrape-leaderboard', async (_req, res) => {
   try {
-    // 1. Obtener solo pilotos activos desde Supabase
+    // 1. Obtener pilotos activos
     const { data: pilotos, error: pilotosError } = await supabase
       .from('pilotos')
       .select('nombre')
@@ -88,20 +86,21 @@ router.get('/scrape-leaderboard', async (_req, res) => {
 
     if (configError) throw configError;
 
-    // 3. URLs de los tracks
+    // 3. Construir URLs
     const urlRace = `https://www.velocidrone.com/leaderboard/${config.track_race_mode.escenario_id}/${config.track_race_mode.track_id}/All`;
     const url3Lap = `https://www.velocidrone.com/leaderboard/${config.track_3_lap.escenario_id}/${config.track_3_lap.track_id}/All`;
 
-    // 4. Scraping en paralelo con timeout
-    const scrapingTimeout = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Timeout excedido')), 30000);
-
-    const scraping = Promise.all([
+    // 4. Scraping con timeout controlado
+    const scrapingPromise = Promise.all([
       obtenerDatosPestania(urlRace, 'Race Mode: Single Class', nombresPilotos),
       obtenerDatosPestania(url3Lap, '3 Lap: Single Class', nombresPilotos)
     ]);
 
-    const [raceMode, threeLap] = await Promise.race([scraping, scrapingTimeout]);
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Timeout excedido')), 30000);
+    });
+
+    const [raceMode, threeLap] = await Promise.race([scrapingPromise, timeoutPromise]);
 
     res.json({
       success: true,
