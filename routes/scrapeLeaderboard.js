@@ -1,10 +1,9 @@
 import express from 'express';
 import puppeteer from 'puppeteer';
-import supabase from '../supabaseClient.js';
+import supabase from '../config/supabaseClient.js'; // ✅ Ruta corregida
 
 const router = express.Router();
 
-// Función para obtener datos de una pestaña específica
 async function obtenerDatosPestania(url, textoPestania, pilotosFiltrados) {
   const browser = await puppeteer.launch({
     headless: 'new',
@@ -22,13 +21,13 @@ async function obtenerDatosPestania(url, textoPestania, pilotosFiltrados) {
       timeout: 60000
     });
 
-    // Extraer metadatos del track
+    // Extraer metadatos
     const metadatos = await page.evaluate(() => ({
       escenario: document.querySelector('h2.text-center')?.textContent.trim() || 'Escenario no encontrado',
       track: document.querySelector('div.container h3')?.textContent.trim() || 'Track no encontrado'
     }));
 
-    // Cambiar a la pestaña solicitada
+    // Cambiar a pestaña
     await page.evaluate((texto) => {
       const tabs = Array.from(document.querySelectorAll('a'));
       const targetTab = tabs.find(tab => tab.textContent.includes(texto));
@@ -54,10 +53,7 @@ async function obtenerDatosPestania(url, textoPestania, pilotosFiltrados) {
       }).filter(Boolean);
     }, pilotosFiltrados);
 
-    return {
-      metadata: metadatos,
-      resultados
-    };
+    return { metadata: metadatos, resultados };
   } finally {
     await browser.close();
   }
@@ -65,19 +61,19 @@ async function obtenerDatosPestania(url, textoPestania, pilotosFiltrados) {
 
 router.get('/scrape-leaderboard', async (_req, res) => {
   try {
-    // 1. Obtener configuración de tracks desde Supabase
+    // 1. Obtener configuración desde Supabase
     const { data: config, error: configError } = await supabase
       .from('configuracion_tracks')
       .select(`
-        track_race_mode: tracks_race_mode(escenario_id, track_id),
-        track_3_lap: tracks_3_lap(escenario_id, track_id)
+        track_race_mode: tracks_race_mode(escenario_id, track_id, nombre_escenario, nombre_track),
+        track_3_lap: tracks_3_lap(escenario_id, track_id, nombre_escenario, nombre_track)
       `)
       .eq('activo', true)
       .single();
 
     if (configError) throw configError;
 
-    // 2. Obtener lista de pilotos activos
+    // 2. Obtener pilotos activos
     const { data: pilotos, error: pilotosError } = await supabase
       .from('pilotos')
       .select('nombre')
@@ -90,14 +86,11 @@ router.get('/scrape-leaderboard', async (_req, res) => {
     const urlRace = `https://www.velocidrone.com/leaderboard/${config.track_race_mode.escenario_id}/${config.track_race_mode.track_id}/All`;
     const url3Lap = `https://www.velocidrone.com/leaderboard/${config.track_3_lap.escenario_id}/${config.track_3_lap.track_id}/All`;
 
-    // 4. Obtener datos de ambas pestañas en paralelo
+    // 4. Obtener datos
     const [raceMode, threeLap] = await Promise.all([
       obtenerDatosPestania(urlRace, 'Race Mode: Single Class', nombresPilotos),
       obtenerDatosPestania(url3Lap, '3 Lap: Single Class', nombresPilotos)
     ]);
-
-    // 5. Guardar resultados en Supabase (opcional)
-    await guardarResultados(raceMode, threeLap);
 
     res.json({
       success: true,
@@ -115,43 +108,5 @@ router.get('/scrape-leaderboard', async (_req, res) => {
     });
   }
 });
-
-// Función para guardar resultados en Supabase (opcional)
-async function guardarResultados(raceMode, threeLap) {
-  const batch = [];
-  const fecha = new Date().toISOString();
-
-  // Procesar Race Mode
-  raceMode.resultados.forEach(result => {
-    batch.push({
-      pilot_name: result.pilot,
-      track: raceMode.metadata.track,
-      escenario: raceMode.metadata.escenario,
-      mode: 'Race',
-      time: result.time,
-      position: result.position,
-      fecha_actualizacion: fecha
-    });
-  });
-
-  // Procesar 3 Lap
-  threeLap.resultados.forEach(result => {
-    batch.push({
-      pilot_name: result.pilot,
-      track: threeLap.metadata.track,
-      escenario: threeLap.metadata.escenario,
-      mode: '3 Lap',
-      time: result.time,
-      position: result.position,
-      fecha_actualizacion: fecha
-    });
-  });
-
-  const { error } = await supabase
-    .from('resultados_historicos')
-    .insert(batch);
-
-  if (error) console.error('Error guardando resultados:', error);
-}
 
 export default router;
