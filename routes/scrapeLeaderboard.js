@@ -1,77 +1,157 @@
 import express from 'express';
 import puppeteer from 'puppeteer';
+import supabase from '../supabaseClient.js';
 
 const router = express.Router();
 
-async function obtenerDatosCompletos(url, textoPestania) {
+// Función para obtener datos de una pestaña específica
+async function obtenerDatosPestania(url, textoPestania, pilotosFiltrados) {
   const browser = await puppeteer.launch({
     headless: 'new',
     args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
   
   const page = await browser.newPage();
-  await page.goto(url, { waitUntil: 'domcontentloaded' });
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+  await page.setViewport({ width: 1366, height: 768 });
 
   try {
-    // Extraer metadatos
-    const { escenario, track } = await page.evaluate(() => ({
+    // Navegar a la URL
+    await page.goto(url, { 
+      waitUntil: 'networkidle2',
+      timeout: 60000
+    });
+
+    // Extraer metadatos del track
+    const metadatos = await page.evaluate(() => ({
       escenario: document.querySelector('h2.text-center')?.textContent.trim() || 'Escenario no encontrado',
       track: document.querySelector('div.container h3')?.textContent.trim() || 'Track no encontrado'
     }));
 
-    // Cambiar a pestaña
+    // Cambiar a la pestaña solicitada
     await page.evaluate((texto) => {
       const tabs = Array.from(document.querySelectorAll('a'));
       const targetTab = tabs.find(tab => tab.textContent.includes(texto));
       if (targetTab) targetTab.click();
     }, textoPestania);
 
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await page.waitForTimeout(3000);
     await page.waitForSelector('tbody tr', { timeout: 10000 });
 
-    // Extraer resultados
-    const resultados = await page.evaluate(() => {
+    // Extraer y filtrar resultados
+    const resultados = await page.evaluate((pilotosFiltrados) => {
       const rows = Array.from(document.querySelectorAll('tbody tr'));
       return rows.slice(0, 20).map(row => {
         const cols = row.querySelectorAll('td');
+        const piloto = cols[2]?.textContent.trim();
+        if (!pilotosFiltrados.includes(piloto)) return null;
+        
         return {
-          position: cols[0]?.textContent?.trim() || '',
-          time: cols[1]?.textContent?.trim() || 'N/A',
-          pilot: cols[2]?.textContent?.trim() || 'N/A'
+          position: cols[0]?.textContent.trim() || '',
+          time: cols[1]?.textContent.trim() || 'N/A',
+          pilot: piloto
         };
-      });
-    });
+      }).filter(Boolean);
+    }, pilotosFiltrados);
 
-    return { metadata: { escenario, track }, resultados };
+    return {
+      metadata: metadatos,
+      resultados
+    };
   } finally {
     await browser.close();
   }
 }
 
 router.get('/scrape-leaderboard', async (_req, res) => {
-  const TRACK1_URL = 'https://www.velocidrone.com/leaderboard/33/1763/All';
-  const TRACK2_URL = 'https://www.velocidrone.com/leaderboard/29/217/All'; // Ejemplo segundo track
-
   try {
-    const [raceModeTrack1, threeLapTrack2] = await Promise.all([
-      obtenerDatosCompletos(TRACK1_URL, 'Race Mode: Single Class'),
-      obtenerDatosCompletos(TRACK2_URL, '3 Lap: Single Class')
+    // 1. Obtener configuración de tracks desde Supabase
+    const { data: config, error: configError } = await supabase
+      .from('configuracion_tracks')
+      .select(`
+        track_race_mode: tracks_race_mode(escenario_id, track_id),
+        track_3_lap: tracks_3_lap(escenario_id, track_id)
+      `)
+      .eq('activo', true)
+      .single();
+
+    if (configError) throw configError;
+
+    // 2. Obtener lista de pilotos activos
+    const { data: pilotos, error: pilotosError } = await supabase
+      .from('pilotos')
+      .select('nombre')
+      .eq('activo', true);
+
+    if (pilotosError) throw pilotosError;
+    const nombresPilotos = pilotos.map(p => p.nombre);
+
+    // 3. Construir URLs
+    const urlRace = `https://www.velocidrone.com/leaderboard/${config.track_race_mode.escenario_id}/${config.track_race_mode.track_id}/All`;
+    const url3Lap = `https://www.velocidrone.com/leaderboard/${config.track_3_lap.escenario_id}/${config.track_3_lap.track_id}/All`;
+
+    // 4. Obtener datos de ambas pestañas en paralelo
+    const [raceMode, threeLap] = await Promise.all([
+      obtenerDatosPestania(urlRace, 'Race Mode: Single Class', nombresPilotos),
+      obtenerDatosPestania(url3Lap, '3 Lap: Single Class', nombresPilotos)
     ]);
 
-    res.json({ 
+    // 5. Guardar resultados en Supabase (opcional)
+    await guardarResultados(raceMode, threeLap);
+
+    res.json({
       success: true,
-      raceMode: raceModeTrack1,
-      threeLap: threeLapTrack2,
+      raceMode,
+      threeLap,
       timestamp: new Date().toISOString()
     });
+
   } catch (error) {
-    console.error('Error:', error);
-    res.status(500).json({ 
+    console.error('Error en scraping:', error);
+    res.status(500).json({
       success: false,
-      error: 'Error al obtener datos',
-      details: error.message
+      error: error.message,
+      details: 'Error al obtener datos del leaderboard'
     });
   }
 });
+
+// Función para guardar resultados en Supabase (opcional)
+async function guardarResultados(raceMode, threeLap) {
+  const batch = [];
+  const fecha = new Date().toISOString();
+
+  // Procesar Race Mode
+  raceMode.resultados.forEach(result => {
+    batch.push({
+      pilot_name: result.pilot,
+      track: raceMode.metadata.track,
+      escenario: raceMode.metadata.escenario,
+      mode: 'Race',
+      time: result.time,
+      position: result.position,
+      fecha_actualizacion: fecha
+    });
+  });
+
+  // Procesar 3 Lap
+  threeLap.resultados.forEach(result => {
+    batch.push({
+      pilot_name: result.pilot,
+      track: threeLap.metadata.track,
+      escenario: threeLap.metadata.escenario,
+      mode: '3 Lap',
+      time: result.time,
+      position: result.position,
+      fecha_actualizacion: fecha
+    });
+  });
+
+  const { error } = await supabase
+    .from('resultados_historicos')
+    .insert(batch);
+
+  if (error) console.error('Error guardando resultados:', error);
+}
 
 export default router;
