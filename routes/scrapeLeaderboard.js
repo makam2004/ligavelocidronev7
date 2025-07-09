@@ -7,59 +7,61 @@ router.get('/scrape-leaderboard', async (_req, res) => {
   const URL = 'https://www.velocidrone.com/leaderboard/33/1763/All';
   
   try {
-    // 1. Configuración mejorada para producción
+    // 1. Configuración mejorada
     const browser = await puppeteer.launch({
       headless: 'new',
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--single-process'
-      ],
-      timeout: 120000
+        '--disable-dev-shm-usage'
+      ]
     });
     
     const page = await browser.newPage();
     
-    // 2. Configuración stealth avanzada
+    // 2. Configurar como navegador real
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-    await page.setJavaScriptEnabled(true);
     await page.setViewport({ width: 1366, height: 768 });
-    await page.setDefaultNavigationTimeout(120000);
 
-    // 3. Navegación con espera inteligente
-    console.log('Navegando a la página...');
+    // 3. Navegar a la página
+    console.log('Cargando página...');
     await page.goto(URL, { 
       waitUntil: 'networkidle2',
-      timeout: 120000
+      timeout: 60000
     });
 
-    // 4. Esperar a que cargue el contenido dinámico
-    console.log('Esperando contenido...');
-    await page.waitForFunction(() => {
-      return document.querySelector('table') || 
-             document.body.textContent.includes('Time');
-    }, { timeout: 30000 });
-
-    // 5. Extracción de datos mejorada
-    const extractData = async (tabName) => {
+    // 4. Función mejorada para extraer datos de cada pestaña
+    const extractTabData = async (tabId, tabName) => {
       try {
-        // Intentar activar la pestaña si existe
-        const tabSelector = `a[href="#${tabName}"], [data-target="#${tabName}"], [aria-controls="${tabName}"]`;
-        const tabElement = await page.$(tabSelector);
+        console.log(`Procesando pestaña: ${tabName}`);
         
-        if (tabElement) {
-          await tabElement.click();
-          await page.waitForTimeout(5000); // Espera generosa para carga
+        // Hacer clic en la pestaña usando diferentes selectores posibles
+        const tabSelectors = [
+          `a[href="#${tabId}"]`,
+          `button[data-target="#${tabId}"]`,
+          `li a[aria-controls="${tabId}"]`
+        ];
+
+        for (const selector of tabSelectors) {
+          try {
+            await page.click(selector);
+            await page.waitForTimeout(3000); // Espera para carga dinámica
+            break;
+          } catch (e) {
+            console.log(`Selector ${selector} no funcionó, probando siguiente...`);
+          }
         }
 
-        return await page.evaluate((tabName) => {
-          // Buscar la tabla activa o dentro del contenedor de pestaña
-          const tabContent = document.querySelector(`#${tabName}`) || 
-                            document.querySelector('.tab-pane.active') || 
-                            document.querySelector('.active.tab-pane');
-          
-          const table = tabContent ? tabContent.querySelector('table') : document.querySelector('table');
+        // Extraer datos con verificación de pestaña activa
+        return await page.evaluate((expectedTabId) => {
+          // Verificar que la pestaña correcta está activa
+          const activeTab = document.querySelector('.nav-link.active, .nav-item.active a');
+          if (activeTab && !activeTab.getAttribute('href')?.includes(expectedTabId)) {
+            console.warn(`Pestaña activa no coincide: ${activeTab.getAttribute('href')}`);
+            return [];
+          }
+
+          const table = document.querySelector('.tab-content .tab-pane.active table, .tab-pane.active table');
           if (!table) return [];
 
           const rows = Array.from(table.querySelectorAll('tbody tr')).slice(0, 20);
@@ -71,49 +73,38 @@ router.get('/scrape-leaderboard', async (_req, res) => {
               pilot: cols[2]?.textContent?.trim() || 'N/A'
             };
           });
-        }, tabName);
+        }, tabId);
       } catch (e) {
-        console.error(`Error en ${tabName}:`, e.message);
+        console.error(`Error procesando ${tabName}:`, e);
         return [];
       }
     };
 
-    // 6. Extraer datos con múltiples intentos
-    let raceModeData = [];
-    let threeLapData = [];
-    let attempts = 0;
+    // 5. Extraer datos secuencialmente con verificación
+    console.log('Extrayendo Race Mode...');
+    let raceModeData = await extractTabData('race-mode-single-class', 'Race Mode');
     
-    while (attempts < 3 && (raceModeData.length === 0 || threeLapData.length === 0)) {
-      attempts++;
-      console.log(`Intento ${attempts} de extracción...`);
-      
-      if (raceModeData.length === 0) {
-        raceModeData = await extractData('race-mode-single-class');
-      }
-      
-      if (threeLapData.length === 0) {
-        threeLapData = await extractData('three-lap-single-class');
-      }
-      
-      if (raceModeData.length === 0 && threeLapData.length === 0) {
-        await page.reload({ waitUntil: 'networkidle2', timeout: 30000 });
-        await page.waitForTimeout(5000);
-      }
+    // Verificar que no son datos de 3 Lap
+    if (raceModeData.length > 0 && raceModeData[0].time.includes(':')) {
+      console.log('Posible mezcla de datos, reintentando...');
+      raceModeData = await extractTabData('race-mode-single-class', 'Race Mode');
     }
+
+    console.log('Extrayendo 3 Lap...');
+    const threeLapData = await extractTabData('three-lap-single-class', '3 Lap');
 
     await browser.close();
 
-    // 7. Validación final
+    // 6. Validación final
     if (raceModeData.length === 0 && threeLapData.length === 0) {
-      throw new Error('No se encontraron datos después de 3 intentos');
+      throw new Error('No se encontraron datos válidos');
     }
 
     res.json({ 
       success: true,
       raceMode: raceModeData,
       threeLap: threeLapData,
-      timestamp: new Date().toISOString(),
-      attempts: attempts
+      timestamp: new Date().toISOString()
     });
 
   } catch (error) {
@@ -122,7 +113,7 @@ router.get('/scrape-leaderboard', async (_req, res) => {
       success: false,
       error: 'Error al obtener datos',
       details: error.message,
-      suggestion: 'Por favor verifique: 1) La URL es correcta 2) La estructura no ha cambiado 3) No hay protección anti-bots'
+      suggestion: 'Por favor verifique: 1) La estructura de la página no ha cambiado 2) No hay protección anti-bots'
     });
   }
 });
