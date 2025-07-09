@@ -15,19 +15,13 @@ async function obtenerDatosPestania(url, textoPestania, pilotosFiltrados) {
   await page.setViewport({ width: 1366, height: 768 });
 
   try {
-    // Navegar a la URL
-    await page.goto(url, { 
-      waitUntil: 'networkidle2',
-      timeout: 60000
-    });
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
 
-    // Extraer metadatos
     const metadatos = await page.evaluate(() => ({
       escenario: document.querySelector('h2.text-center')?.textContent.trim() || 'Escenario no encontrado',
       track: document.querySelector('div.container h3')?.textContent.trim() || 'Track no encontrado'
     }));
 
-    // Cambiar a pestaña
     await page.evaluate((texto) => {
       const tabs = Array.from(document.querySelectorAll('a'));
       const targetTab = tabs.find(tab => tab.textContent.includes(texto));
@@ -37,19 +31,16 @@ async function obtenerDatosPestania(url, textoPestania, pilotosFiltrados) {
     await page.waitForTimeout(3000);
     await page.waitForSelector('tbody tr', { timeout: 10000 });
 
-    // Extraer y filtrar resultados
     const resultados = await page.evaluate((pilotosFiltrados) => {
       const rows = Array.from(document.querySelectorAll('tbody tr'));
       return rows.slice(0, 20).map(row => {
         const cols = row.querySelectorAll('td');
         const piloto = cols[2]?.textContent.trim();
-        if (!pilotosFiltrados.includes(piloto)) return null;
-        
-        return {
+        return pilotosFiltrados.includes(piloto) ? {
           position: cols[0]?.textContent.trim() || '',
           time: cols[1]?.textContent.trim() || 'N/A',
           pilot: piloto
-        };
+        } : null;
       }).filter(Boolean);
     }, pilotosFiltrados);
 
@@ -61,12 +52,12 @@ async function obtenerDatosPestania(url, textoPestania, pilotosFiltrados) {
 
 router.get('/scrape-leaderboard', async (_req, res) => {
   try {
-    // 1. Obtener configuración desde Supabase
+    // 1. Obtener configuración con tus nombres actuales
     const { data: config, error: configError } = await supabase
       .from('configuracion_tracks')
       .select(`
-        track_race_mode: tracks_race_mode(escenario_id, track_id, nombre_escenario, nombre_track),
-        track_3_lap: tracks_3_lap(escenario_id, track_id, nombre_escenario, nombre_track)
+        track_race_mode: tracks!track_race_mode(escenario_id, track_id, nombre_escenario, nombre_track),
+        track_3_lap: tracks!track_3_lap(escenario_id, track_id, nombre_escenario, nombre_track)
       `)
       .eq('activo', true)
       .single();
