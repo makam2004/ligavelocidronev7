@@ -2,16 +2,21 @@ async function fetchLeaderboardData() {
   try {
     const response = await fetch('/api/scrape-leaderboard');
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+      throw new Error(`Error HTTP: ${response.status}`);
     }
     const data = await response.json();
     
-    if (!data.success) {
+    if (data.success) {
+      // Actualizar la información del track y escenario
+      document.getElementById('escenario').textContent = data.metadata.escenario;
+      document.getElementById('track-name').textContent = data.metadata.track;
+      
+      // Actualizar las tablas
+      updateTable('race-mode-data', data.raceMode);
+      updateTable('three-lap-data', data.threeLap);
+    } else {
       throw new Error(data.error || 'Error desconocido');
     }
-
-    updateTable('race-mode-data', data.raceMode);
-    updateTable('three-lap-data', data.threeLap);
   } catch (error) {
     console.error('Error fetching data:', error);
     document.getElementById('error-message').textContent = `Error: ${error.message}`;
@@ -34,5 +39,7 @@ function updateTable(tableId, data) {
 // Cargar datos al iniciar y cada 60 segundos
 document.addEventListener('DOMContentLoaded', () => {
   fetchLeaderboardData();
+  document.getElementById('refresh-btn').addEventListener('click', fetchLeaderboardData);
+  
   setInterval(fetchLeaderboardData, 60000);
 });

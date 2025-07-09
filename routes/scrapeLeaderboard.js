@@ -3,7 +3,7 @@ import puppeteer from 'puppeteer';
 
 const router = express.Router();
 
-async function obtenerDatosPestania(url, textoPestania) {
+async function obtenerDatosCompletos(url, textoPestania) {
   const browser = await puppeteer.launch({
     headless: 'new',
     args: ['--no-sandbox', '--disable-setuid-sandbox']
@@ -13,19 +13,26 @@ async function obtenerDatosPestania(url, textoPestania) {
   await page.goto(url, { waitUntil: 'domcontentloaded' });
 
   try {
-    // 1. Hacer clic en la pestaña correcta
+    // 1. Extraer información del escenario y track
+    const { escenario, track } = await page.evaluate(() => {
+      return {
+        escenario: document.querySelector('h2.text-center')?.textContent.trim() || 'Escenario no encontrado',
+        track: document.querySelector('div.container h3')?.textContent.trim() || 'Track no encontrado'
+      };
+    });
+
+    // 2. Cambiar a la pestaña solicitada
     await page.evaluate((texto) => {
       const tabs = Array.from(document.querySelectorAll('a'));
       const targetTab = tabs.find(tab => tab.textContent.includes(texto));
       if (targetTab) targetTab.click();
     }, textoPestania);
 
-    // 2. Esperar a que cargue el contenido
     await new Promise(resolve => setTimeout(resolve, 2000));
     await page.waitForSelector('tbody tr', { timeout: 10000 });
 
     // 3. Extraer datos de la tabla
-    return await page.evaluate(() => {
+    const resultados = await page.evaluate(() => {
       const rows = Array.from(document.querySelectorAll('tbody tr'));
       return rows.slice(0, 20).map(row => {
         const cols = row.querySelectorAll('td');
@@ -36,6 +43,8 @@ async function obtenerDatosPestania(url, textoPestania) {
         };
       });
     });
+
+    return { escenario, track, resultados };
   } finally {
     await browser.close();
   }
@@ -46,20 +55,19 @@ router.get('/scrape-leaderboard', async (_req, res) => {
   
   try {
     // Obtener datos de ambas pestañas
-    const [raceModeData, threeLapData] = await Promise.all([
-      obtenerDatosPestania(URL, 'Race Mode: Single Class'),
-      obtenerDatosPestania(URL, '3 Lap: Single Class')
+    const [raceMode, threeLap] = await Promise.all([
+      obtenerDatosCompletos(URL, 'Race Mode: Single Class'),
+      obtenerDatosCompletos(URL, '3 Lap: Single Class')
     ]);
-
-    // Validar resultados
-    if (raceModeData.length === 0 && threeLapData.length === 0) {
-      throw new Error('No se encontraron datos en ninguna pestaña');
-    }
 
     res.json({ 
       success: true,
-      raceMode: raceModeData,
-      threeLap: threeLapData,
+      metadata: {
+        escenario: raceMode.escenario, // "Dynamic Weather"
+        track: raceMode.track          // "SGDC Floodlit BQE March 2025"
+      },
+      raceMode: raceMode.resultados,
+      threeLap: threeLap.resultados,
       timestamp: new Date().toISOString()
     });
 
@@ -68,8 +76,7 @@ router.get('/scrape-leaderboard', async (_req, res) => {
     res.status(500).json({ 
       success: false,
       error: 'Error al obtener datos',
-      details: error.message,
-      suggestion: 'Por favor verifique la URL y la estructura de la página'
+      details: error.message
     });
   }
 });
