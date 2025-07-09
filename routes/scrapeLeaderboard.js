@@ -1,6 +1,6 @@
 import express from 'express';
 import puppeteer from 'puppeteer';
-import supabase from '../config/supabaseClient.js'; // ✅ Ruta corregida
+import supabase from '../../config/supabaseClient.js';
 
 const router = express.Router();
 
