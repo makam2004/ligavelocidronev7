@@ -4,7 +4,7 @@ import supabase from '../config/supabase.js';
 
 const router = express.Router();
 
-// Función de espera alternativa
+// Función de espera mejorada
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function obtenerDatosPestania(url, textoPestania, pilotosFiltrados) {
@@ -18,41 +18,45 @@ async function obtenerDatosPestania(url, textoPestania, pilotosFiltrados) {
   await page.setViewport({ width: 1366, height: 768 });
 
   try {
-    // Navegar a la URL
+    // 1. Navegación rápida sin esperar recursos innecesarios
     await page.goto(url, { 
-      waitUntil: 'networkidle2',
-      timeout: 60000
+      waitUntil: 'domcontentloaded',
+      timeout: 30000
     });
 
-    // Extraer metadatos
+    // 2. Extraer metadatos primero
     const metadatos = await page.evaluate(() => ({
       escenario: document.querySelector('h2.text-center')?.textContent.trim() || 'Escenario no encontrado',
       track: document.querySelector('div.container h3')?.textContent.trim() || 'Track no encontrado'
     }));
 
-    // Cambiar a pestaña
-    await page.evaluate((texto) => {
-      const tabs = Array.from(document.querySelectorAll('a'));
-      const targetTab = tabs.find(tab => tab.textContent.includes(texto));
-      if (targetTab) targetTab.click();
-    }, textoPestania);
+    // 3. Cambiar a pestaña específica (más eficiente)
+    const tabSelector = `a:has-text("${textoPestania}")`;
+    await page.click(tabSelector);
+    await delay(1500); // Espera mínima necesaria
 
-    // Espera alternativa
-    await delay(3000); // Reemplaza waitForTimeout
-    await page.waitForSelector('tbody tr', { timeout: 10000 });
-
-    // Extraer resultados
+    // 4. Extraer solo los primeros 200 pilotos y filtrar
     const resultados = await page.evaluate((pilotosFiltrados) => {
-      const rows = Array.from(document.querySelectorAll('tbody tr'));
-      return rows.slice(0, 20).map(row => {
-        const cols = row.querySelectorAll('td');
-        const piloto = cols[2]?.textContent.trim();
-        return pilotosFiltrados.includes(piloto) ? {
-          position: cols[0]?.textContent.trim() || '',
-          time: cols[1]?.textContent.trim() || 'N/A',
-          pilot: piloto
-        } : null;
-      }).filter(Boolean);
+      const resultadosFiltrados = [];
+      const rows = document.querySelectorAll('tbody tr');
+      
+      // Limitar a 200 resultados para mayor velocidad
+      const maxRows = Math.min(200, rows.length);
+      
+      for (let i = 0; i < maxRows; i++) {
+        const cols = rows[i].querySelectorAll('td');
+        if (cols.length >= 3) {
+          const piloto = cols[2]?.textContent.trim();
+          if (pilotosFiltrados.includes(piloto)) {
+            resultadosFiltrados.push({
+              position: cols[0]?.textContent.trim() || (i + 1).toString(),
+              time: cols[1]?.textContent.trim() || 'N/A',
+              pilot: piloto
+            });
+          }
+        }
+      }
+      return resultadosFiltrados;
     }, pilotosFiltrados);
 
     return { metadata: metadatos, resultados };
@@ -63,19 +67,7 @@ async function obtenerDatosPestania(url, textoPestania, pilotosFiltrados) {
 
 router.get('/scrape-leaderboard', async (_req, res) => {
   try {
-    // 1. Obtener configuración
-    const { data: config, error: configError } = await supabase
-      .from('configuracion_tracks')
-      .select(`
-        track_race_mode: tracks!track_race_mode(escenario_id, track_id, nombre_escenario, nombre_track),
-        track_3_lap: tracks!track_3_lap(escenario_id, track_id, nombre_escenario, nombre_track)
-      `)
-      .eq('activo', true)
-      .single();
-
-    if (configError) throw configError;
-
-    // 2. Obtener pilotos
+    // 1. Obtener solo pilotos activos desde Supabase
     const { data: pilotos, error: pilotosError } = await supabase
       .from('pilotos')
       .select('nombre')
@@ -84,15 +76,32 @@ router.get('/scrape-leaderboard', async (_req, res) => {
     if (pilotosError) throw pilotosError;
     const nombresPilotos = pilotos.map(p => p.nombre);
 
-    // 3. Construir URLs
+    // 2. Obtener configuración de tracks
+    const { data: config, error: configError } = await supabase
+      .from('configuracion_tracks')
+      .select(`
+        track_race_mode: tracks!track_race_mode(escenario_id, track_id),
+        track_3_lap: tracks!track_3_lap(escenario_id, track_id)
+      `)
+      .eq('activo', true)
+      .single();
+
+    if (configError) throw configError;
+
+    // 3. URLs de los tracks
     const urlRace = `https://www.velocidrone.com/leaderboard/${config.track_race_mode.escenario_id}/${config.track_race_mode.track_id}/All`;
     const url3Lap = `https://www.velocidrone.com/leaderboard/${config.track_3_lap.escenario_id}/${config.track_3_lap.track_id}/All`;
 
-    // 4. Obtener datos
-    const [raceMode, threeLap] = await Promise.all([
+    // 4. Scraping en paralelo con timeout
+    const scrapingTimeout = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Timeout excedido')), 30000);
+
+    const scraping = Promise.all([
       obtenerDatosPestania(urlRace, 'Race Mode: Single Class', nombresPilotos),
       obtenerDatosPestania(url3Lap, '3 Lap: Single Class', nombresPilotos)
     ]);
+
+    const [raceMode, threeLap] = await Promise.race([scraping, scrapingTimeout]);
 
     res.json({
       success: true,
@@ -102,7 +111,7 @@ router.get('/scrape-leaderboard', async (_req, res) => {
     });
 
   } catch (error) {
-    console.error('Error en scraping:', error);
+    console.error('Error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
