@@ -4,6 +4,9 @@ import supabase from '../config/supabase.js';
 
 const router = express.Router();
 
+// Función de espera alternativa
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
 async function obtenerDatosPestania(url, textoPestania, pilotosFiltrados) {
   const browser = await puppeteer.launch({
     headless: 'new',
@@ -15,22 +18,30 @@ async function obtenerDatosPestania(url, textoPestania, pilotosFiltrados) {
   await page.setViewport({ width: 1366, height: 768 });
 
   try {
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+    // Navegar a la URL
+    await page.goto(url, { 
+      waitUntil: 'networkidle2',
+      timeout: 60000
+    });
 
+    // Extraer metadatos
     const metadatos = await page.evaluate(() => ({
       escenario: document.querySelector('h2.text-center')?.textContent.trim() || 'Escenario no encontrado',
       track: document.querySelector('div.container h3')?.textContent.trim() || 'Track no encontrado'
     }));
 
+    // Cambiar a pestaña
     await page.evaluate((texto) => {
       const tabs = Array.from(document.querySelectorAll('a'));
       const targetTab = tabs.find(tab => tab.textContent.includes(texto));
       if (targetTab) targetTab.click();
     }, textoPestania);
 
-    await page.waitForTimeout(3000);
+    // Espera alternativa
+    await delay(3000); // Reemplaza waitForTimeout
     await page.waitForSelector('tbody tr', { timeout: 10000 });
 
+    // Extraer resultados
     const resultados = await page.evaluate((pilotosFiltrados) => {
       const rows = Array.from(document.querySelectorAll('tbody tr'));
       return rows.slice(0, 20).map(row => {
@@ -52,7 +63,7 @@ async function obtenerDatosPestania(url, textoPestania, pilotosFiltrados) {
 
 router.get('/scrape-leaderboard', async (_req, res) => {
   try {
-    // 1. Obtener configuración con tus nombres actuales
+    // 1. Obtener configuración
     const { data: config, error: configError } = await supabase
       .from('configuracion_tracks')
       .select(`
@@ -64,7 +75,7 @@ router.get('/scrape-leaderboard', async (_req, res) => {
 
     if (configError) throw configError;
 
-    // 2. Obtener pilotos activos
+    // 2. Obtener pilotos
     const { data: pilotos, error: pilotosError } = await supabase
       .from('pilotos')
       .select('nombre')
@@ -95,7 +106,7 @@ router.get('/scrape-leaderboard', async (_req, res) => {
     res.status(500).json({
       success: false,
       error: error.message,
-      details: 'Error al obtener datos del leaderboard'
+      details: 'Error al obtener datos'
     });
   }
 });
