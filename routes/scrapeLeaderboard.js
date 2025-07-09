@@ -16,7 +16,7 @@ router.get('/scrape-leaderboard', async (_req, res) => {
         '--disable-dev-shm-usage',
         '--single-process'
       ],
-      timeout: 90000
+      timeout: 120000
     });
     
     const page = await browser.newPage();
@@ -24,64 +24,96 @@ router.get('/scrape-leaderboard', async (_req, res) => {
     // 2. Configuración stealth avanzada
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
     await page.setJavaScriptEnabled(true);
-    await page.setViewport({ width: 1280, height: 800 });
-    await page.setDefaultNavigationTimeout(90000);
+    await page.setViewport({ width: 1366, height: 768 });
+    await page.setDefaultNavigationTimeout(120000);
 
     // 3. Navegación con espera inteligente
-    console.log('Cargando página...');
+    console.log('Navegando a la página...');
     await page.goto(URL, { 
       waitUntil: 'networkidle2',
-      timeout: 90000
+      timeout: 120000
     });
 
-    // 4. Extracción específica para Velocidrone (basado en tu imagen)
-    const extractTableData = async (tabName) => {
-      try {
-        // Hacer clic en la pestaña correspondiente
-        await page.click(`a[href="#${tabName}"]`);
-        await page.waitForTimeout(3000); // Espera generosa para carga dinámica
+    // 4. Esperar a que cargue el contenido dinámico
+    console.log('Esperando contenido...');
+    await page.waitForFunction(() => {
+      return document.querySelector('table') || 
+             document.body.textContent.includes('Time');
+    }, { timeout: 30000 });
 
-        return await page.evaluate(() => {
-          const table = document.querySelector('.tab-pane.active table');
+    // 5. Extracción de datos mejorada
+    const extractData = async (tabName) => {
+      try {
+        // Intentar activar la pestaña si existe
+        const tabSelector = `a[href="#${tabName}"], [data-target="#${tabName}"], [aria-controls="${tabName}"]`;
+        const tabElement = await page.$(tabSelector);
+        
+        if (tabElement) {
+          await tabElement.click();
+          await page.waitForTimeout(5000); // Espera generosa para carga
+        }
+
+        return await page.evaluate((tabName) => {
+          // Buscar la tabla activa o dentro del contenedor de pestaña
+          const tabContent = document.querySelector(`#${tabName}`) || 
+                            document.querySelector('.tab-pane.active') || 
+                            document.querySelector('.active.tab-pane');
+          
+          const table = tabContent ? tabContent.querySelector('table') : document.querySelector('table');
           if (!table) return [];
 
-          const rows = Array.from(table.querySelectorAll('tbody tr'));
-          return rows.slice(0, 20).map(row => {
+          const rows = Array.from(table.querySelectorAll('tbody tr')).slice(0, 20);
+          return rows.map(row => {
             const cols = row.querySelectorAll('td');
             return {
               position: cols[0]?.textContent?.trim() || '',
               time: cols[1]?.textContent?.trim() || 'N/A',
-              pilot: cols[2]?.textContent?.trim() || 'N/A',
-              country: cols[3]?.textContent?.trim() || '',
-              model: cols[4]?.textContent?.trim() || ''
+              pilot: cols[2]?.textContent?.trim() || 'N/A'
             };
           });
-        });
+        }, tabName);
       } catch (e) {
-        console.error(`Error en ${tabName}:`, e);
+        console.error(`Error en ${tabName}:`, e.message);
         return [];
       }
     };
 
-    // 5. Extraer datos secuencialmente (más confiable que Promise.all)
-    console.log('Extrayendo Race Mode...');
-    const raceModeData = await extractTableData('race-mode-single-class');
+    // 6. Extraer datos con múltiples intentos
+    let raceModeData = [];
+    let threeLapData = [];
+    let attempts = 0;
     
-    console.log('Extrayendo 3 Lap...');
-    const threeLapData = await extractTableData('three-lap-single-class');
+    while (attempts < 3 && (raceModeData.length === 0 || threeLapData.length === 0)) {
+      attempts++;
+      console.log(`Intento ${attempts} de extracción...`);
+      
+      if (raceModeData.length === 0) {
+        raceModeData = await extractData('race-mode-single-class');
+      }
+      
+      if (threeLapData.length === 0) {
+        threeLapData = await extractData('three-lap-single-class');
+      }
+      
+      if (raceModeData.length === 0 && threeLapData.length === 0) {
+        await page.reload({ waitUntil: 'networkidle2', timeout: 30000 });
+        await page.waitForTimeout(5000);
+      }
+    }
 
     await browser.close();
 
-    // 6. Validación de resultados
+    // 7. Validación final
     if (raceModeData.length === 0 && threeLapData.length === 0) {
-      throw new Error('No se encontraron datos en ninguna tabla');
+      throw new Error('No se encontraron datos después de 3 intentos');
     }
 
     res.json({ 
       success: true,
       raceMode: raceModeData,
       threeLap: threeLapData,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      attempts: attempts
     });
 
   } catch (error) {
